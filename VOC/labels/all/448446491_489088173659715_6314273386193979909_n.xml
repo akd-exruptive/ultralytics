@@ -1,0 +1,28 @@
+<annotation>
+	<folder>all</folder>
+	<filename>448446491_489088173659715_6314273386193979909_n.jpg</filename>
+	<path>C:\Users\AnneKjerstineDesler\OneDrive - CPHI Shared Services A S\Dokumenter\Object detection\ultralytics\VOC\images\all\448446491_489088173659715_6314273386193979909_n.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>1536</width>
+		<height>2048</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>soft</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<robndbox>
+			<cx>787.5177</cx>
+			<cy>1031.1977</cy>
+			<w>1010.2472</w>
+			<h>1532.2953</h>
+			<angle>5.999262</angle>
+		</robndbox>
+		<extra/>
+	</object>
+</annotation>

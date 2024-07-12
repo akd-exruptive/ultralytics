@@ -3,9 +3,11 @@
 import json
 from collections import defaultdict
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import cv2
 import numpy as np
+import os
 
 from ultralytics.utils import LOGGER, TQDM
 from ultralytics.utils.files import increment_path
@@ -558,3 +560,183 @@ def yolo_bbox2segment(im_dir, save_dir=None, sam_model="sam_b.pt"):
             with open(txt_file, "a") as f:
                 f.writelines(text + "\n" for text in texts)
     LOGGER.info(f"Generated segment labels saved in {save_dir}")
+
+
+def convert_voc_to_yolo_obb(voc_root_path: str):
+    """
+    Converts DOTA dataset annotations to YOLO OBB (Oriented Bounding Box) format.
+
+    The function processes images in the 'train' and 'val' folders of the DOTA dataset. For each image, it reads the
+    associated label from the original labels directory and writes new labels in YOLO OBB format to a new directory.
+
+    Args:
+        voc_root_path (str): The root directory path of the VOC dataset.
+
+    Example:
+        ```python
+        from ultralytics.data.converter import convert_voc_to_yolo_obb
+
+        convert_voc_to_yolo_obb('path/to/VOC')
+        ```
+
+    Notes:
+        The directory structure assumed for the VOC dataset:
+
+            - VOC
+                ├─ images
+                │   ├─ train
+                │   └─ val
+                └─ labels
+                    ├─ train_original
+                    └─ val_original
+
+        After execution, the function will organize the labels into:
+
+            - VOC
+                └─ labels
+                    ├─ train
+                    └─ val
+    """
+    voc_root_path = Path(voc_root_path)
+
+    # Class names to indices mapping
+    class_mapping = {
+        "soft_bag": 0,
+        "hard_bag": 1,
+        "odd_sized": 2,
+    }
+
+    def convert_label(image_name, image_width, image_height, orig_label_dir, save_dir):
+        """Converts a single image's VOC annotation to YOLO OBB format and saves it to a specified directory."""
+        orig_label_path = orig_label_dir / f"{image_name}.xml"
+        save_path = save_dir / f"{image_name}.txt"
+        tree = ET.parse(orig_label_path)
+        root = tree.getroot()
+        with save_path.open("w") as g:
+            for obj in root.findall('object'):
+                class_name = obj.find('name').text
+                    
+                bnd_box = obj.find('robndbox')
+            
+                cx =float(bnd_box.find('cx').text)
+                cy = float(bnd_box.find('cy').text)
+                h = float(bnd_box.find('h').text)
+                w = float(bnd_box.find('w').text)
+                angle = float(bnd_box.find('angle').text)
+                
+                # Half dimensions
+                half_w = w / 2
+                half_h = h / 2
+
+                # Calculate the four corners relative to the center
+                corners = np.array([
+                    [-half_w, -half_h],
+                    [ half_w, -half_h],
+                    [ half_w,  half_h],
+                    [-half_w,  half_h]
+                ])
+                
+                # Rotation matrix
+                rotation_matrix = np.array([
+                    [np.cos(angle), -np.sin(angle)],
+                    [np.sin(angle),  np.cos(angle)]
+                ])
+                
+                # Rotate and translate corners
+                rotated_corners = np.dot(corners, rotation_matrix)
+                translated_corners = rotated_corners + np.array([cx, cy])
+                
+                # Extract coordinates
+                x1, y1 = translated_corners[0]
+                x2, y2 = translated_corners[1]
+                x3, y3 = translated_corners[2]
+                x4, y4 = translated_corners[3]
+
+                class_idx = class_mapping[class_name]
+                coords = [x1, y1, x2, y2, x3, y3, x4, y4]
+                normalized_coords = [
+                    coords[i] / image_width if i % 2 == 0 else coords[i] / image_height for i in range(8)
+                ]
+                formatted_coords = ["{:.6g}".format(coord) for coord in normalized_coords]
+                g.write(f"{class_idx} {' '.join(formatted_coords)}\n")
+
+    for phase in ["train", "val"]:
+        image_dir = voc_root_path / "images" / phase
+        orig_label_dir = voc_root_path / "labels" / f"{phase}_original"
+        save_dir = voc_root_path / "labels" / phase
+
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        image_paths = list(image_dir.iterdir())
+        for image_path in TQDM(image_paths, desc=f"Processing {phase} images"):
+            if image_path.suffix != ".png" and image_path.suffix != ".jpg":
+                continue
+            image_name_without_ext = image_path.stem
+            img = cv2.imread(str(image_path))
+            h, w = img.shape[:2]
+            convert_label(image_name_without_ext, w, h, orig_label_dir, save_dir)
+
+
+
+def segment_label(im_dir, save_dir=None, sam_model="sam_b.pt"):
+    """
+    Generates segmentation data using SAM auto-annotator as needed.
+
+    Args:
+        im_dir (str | Path): Path to image directory to convert.
+        save_dir (str | Path): Path to save the generated labels, labels will be saved
+            into `labels-segment` in the same directory level of `im_dir` if save_dir is None. Default: None.
+        sam_model (str): Segmentation model to use for intermediate segmentation data; optional.
+
+    Notes:
+        The input directory structure assumed for dataset:
+
+            - im_dir
+                ├─ 001.jpg
+                ├─ ..
+                └─ NNN.jpg
+            - labels
+                ├─ 001.txt
+                ├─ ..
+                └─ NNN.txt
+    """
+    from tqdm import tqdm
+
+    from ultralytics import SAM
+    from ultralytics.data import YOLODataset
+    from ultralytics.utils import LOGGER
+    from ultralytics.utils.ops import xywh2xyxy
+
+    # NOTE: add placeholder to pass class index check
+    #dataset = YOLODataset(im_dir, data=dict(names=list(range(1000))))
+    #if len(dataset.labels[0]["segments"]) > 0:  # if it's segment data
+    #    LOGGER.info("Segmentation labels detected, no need to generate new ones!")
+    #    return
+
+    LOGGER.info("Detection labels detected, generating segment labels by SAM model!")
+
+    save_dir = Path(save_dir) if save_dir else Path(im_dir).parent.parent / "labels-segment/all"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    sam_model = SAM(sam_model)
+    im_dir = Path(im_dir)
+    im_files = list(im_dir.iterdir())
+    #segments_list = []
+    for im_file in tqdm(im_files, total=len(im_files), desc="Generating segment labels"):
+        im = cv2.imread(im_file)
+        sam_results = sam_model(im, bboxes=None, verbose=False, save=False)
+        segments =sam_results[0].masks.xyn
+        print(segments)
+        #segments_list.append(segments)
+        texts = []
+        lb_name = Path(im_file).with_suffix(".txt").name
+        txt_file = save_dir / lb_name
+        cls = [0] * len(segments)
+        for i, s in enumerate(segments):
+            line = (int(cls[i]), *s.reshape(-1))
+            texts.append(("%g " * len(line)).rstrip() % line)
+        if texts:
+            with open(txt_file, "a") as f:
+                f.writelines(text + "\n" for text in texts)
+    LOGGER.info(f"Generated segment labels saved in {save_dir}")
+
